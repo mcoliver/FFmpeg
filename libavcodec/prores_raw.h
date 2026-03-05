@@ -26,33 +26,38 @@
 #include "libavutil/mem_internal.h"
 #include "libavutil/pixfmt.h"
 
-#include "bytestream.h"
 #include "blockdsp.h"
+#include "bytestream.h"
 #include "proresdsp.h"
 
 typedef struct TileContext {
-    GetByteContext gb;
-    unsigned x, y;
+  GetByteContext gb;
+  unsigned x, y;
 } TileContext;
 
 typedef struct ProResRAWContext {
-    ProresDSPContext prodsp;
-    BlockDSPContext  bdsp;
+  ProresDSPContext prodsp;
+  BlockDSPContext bdsp;
 
-    TileContext *tiles;
-    unsigned int tiles_size;
-    int nb_tiles;
-    int tw, th;
-    int nb_tw, nb_th;
+  TileContext *tiles;
+  unsigned int tiles_size;
+  int nb_tiles;
+  int tw, th;
+  int nb_tw, nb_th;
 
-    enum AVPixelFormat pix_fmt;
-    AVFrame *frame;
-    void *hwaccel_picture_private;
+  enum AVPixelFormat pix_fmt;
+  AVFrame *frame;
+  void *hwaccel_picture_private;
 
-    int version;
+  int version;
 
-    DECLARE_ALIGNED(32, uint8_t, scan)[64];
-    DECLARE_ALIGNED(32, uint8_t, qmat)[64];
+  DECLARE_ALIGNED(32, uint8_t, scan)[64];
+  DECLARE_ALIGNED(32, uint8_t, qmat)[64];
+  float ccm[9];
+  float wb_r, wb_b;
+  float gains[4];
+  int bayer_phase;
+  int16_t black_levels[4];
 } ProResRAWContext;
 
 extern const uint8_t ff_prores_raw_dc_cb[13];
