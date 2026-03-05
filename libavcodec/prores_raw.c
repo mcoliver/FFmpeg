@@ -247,8 +247,7 @@ static int decode_comp(AVCodecContext *avctx, TileContext *tile, AVFrame *frame,
           val += bl; // Subtract black level
           if (val < 0)
             val = 0;
-          p[x * 2] =
-              av_clip_uint16(((unsigned)val * g >> 11) << 3); // Scale to 16-bit
+          p[x * 2] = av_clip_uint16((unsigned)val * g >> 11);
         }
         p += linesize << 1;
       }
@@ -415,7 +414,7 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
   avctx->coded_height = FFALIGN(h, 16);
 
   for (int i = 0; i < 4; i++)
-    s->black_levels[i] = -bytestream2_get_byte(&gb_hdr);
+    s->black_levels[i] = bytestream2_get_byte(&gb_hdr);
   s->bayer_phase = bytestream2_get_be16(&gb_hdr) & 0x3;
   int16_t pedestal = bytestream2_get_be16(&gb_hdr);
   for (int i = 0; i < 4; i++)
@@ -426,36 +425,36 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
 
   s->gains[0] = s->gains[1] = s->gains[2] = s->gains[3] = 1.0;
   switch (s->bayer_phase) {
-  case 0: // RGGB
-    s->gains[0] = s->wb_r;
-    s->gains[3] = s->wb_b;
-    break;
-  case 1: // BGGR
+  case 0: // BGGR (B G / G R)
     s->gains[0] = s->wb_b;
     s->gains[3] = s->wb_r;
     break;
-  case 2: // GBRG
+  case 1: // GBRG (G B / R G)
     s->gains[1] = s->wb_b;
     s->gains[2] = s->wb_r;
     break;
-  case 3: // GRBG
+  case 2: // GRBG (G R / B G)
     s->gains[1] = s->wb_r;
     s->gains[2] = s->wb_b;
+    break;
+  case 3: // RGGB (R G / G B)
+    s->gains[0] = s->wb_r;
+    s->gains[3] = s->wb_b;
     break;
   }
 
   switch (s->bayer_phase) {
   case 0:
-    avctx->pix_fmt = AV_PIX_FMT_BAYER_RGGB16;
-    break;
-  case 1:
     avctx->pix_fmt = AV_PIX_FMT_BAYER_BGGR16;
     break;
-  case 2:
+  case 1:
     avctx->pix_fmt = AV_PIX_FMT_BAYER_GBRG16;
     break;
-  case 3:
+  case 2:
     avctx->pix_fmt = AV_PIX_FMT_BAYER_GRBG16;
+    break;
+  case 3:
+    avctx->pix_fmt = AV_PIX_FMT_BAYER_RGGB16;
     break;
   }
   s->pix_fmt = avctx->pix_fmt;
