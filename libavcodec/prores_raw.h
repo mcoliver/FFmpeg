@@ -24,7 +24,9 @@
 
 #include "libavutil/frame.h"
 #include "libavutil/mem_internal.h"
+#include "libavutil/opt.h"
 #include "libavutil/pixfmt.h"
+
 
 #include "bytestream.h"
 #include "blockdsp.h"
@@ -36,8 +38,10 @@ typedef struct TileContext {
 } TileContext;
 
 typedef struct ProResRAWContext {
+    const AVClass *class;
     ProresDSPContext prodsp;
     BlockDSPContext  bdsp;
+
 
     TileContext *tiles;
     unsigned int tiles_size;
@@ -53,6 +57,9 @@ typedef struct ProResRAWContext {
 
     DECLARE_ALIGNED(32, uint8_t, scan)[64];
     DECLARE_ALIGNED(32, uint8_t, qmat)[64];
+
+    float wb_red;
+    float wb_blue;
 } ProResRAWContext;
 
 extern const uint8_t ff_prores_raw_dc_cb[13];

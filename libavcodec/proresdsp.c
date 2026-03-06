@@ -142,11 +142,12 @@ av_cold void ff_proresdsp_init(ProresDSPContext *dsp, int bits_per_raw_sample)
     if (bits_per_raw_sample == 10) {
         dsp->idct_put = prores_idct_put_10_c;
         dsp->idct_permutation_type = FF_IDCT_PERM_NONE;
-    } else {
-        av_assert1(bits_per_raw_sample == 12);
+    } else if (bits_per_raw_sample == 12 || bits_per_raw_sample == 16) {
         dsp->idct_put = prores_idct_put_12_c;
         dsp->idct_put_bayer = prores_idct_put_bayer_12_c;
         dsp->idct_permutation_type = FF_IDCT_PERM_NONE;
+    } else {
+        av_assert0(0);
     }
 
 #if ARCH_X86 && HAVE_X86ASM

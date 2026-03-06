@@ -40,6 +40,8 @@ layout (set = 0, binding = 1, scalar) readonly buffer frame_data_buf {
 layout (push_constant, scalar) uniform pushConstants {
    u8buf pkt_data;
    ivec2 tile_size;
+   float wb_red;
+   float wb_blue;
    uint8_t qmat[64];
 };
 
@@ -77,7 +79,7 @@ void main(void)
 
     uint64_t pkt_offset = uint64_t(pkt_data) + td.offset;
     u8vec2buf hdr_data = u8vec2buf(pkt_offset);
-    int qscale = pack16(hdr_data[0].v.yx);
+    int qscale = int(hdr_data[0].v.y) >> 1;
 
     const ivec2 offs = td.pos + ivec2(COMP_ID & 1, COMP_ID >> 1);
     const uint w = min(tile_size.x, width - td.pos.x) >> 1;
@@ -86,12 +88,18 @@ void main(void)
     /* We have to do non-uniform access, so copy it */
     uint8_t qmat_buf[64] = qmat;
 
+    float gain = 1.0;
+    if (COMP_ID == 0) // R
+        gain = wb_red;
+    else if (COMP_ID == 3) // B
+        gain = wb_blue;
+
     [[unroll]]
     for (uint y = 0; y < 8; y++) {
         uint block_off = y*8 + ROW_ID;
         int v = int(imageLoad(dst, offs + 2*ivec2(BLOCK_ID*8, 0) + scan[block_off])[0]);
         float vf = float(sign_extend(v, 16)) / 32768.0;
-        vf *= qmat_buf[block_off] * qscale;
+        vf *= qmat_buf[block_off] * qscale * gain;
         blocks[BLOCK_ID][COMP_ID*72 + y*9 + ROW_ID] = (vf / (64*4.56)) *
                                                       idct_scale[block_off];
     }
@@ -108,9 +116,8 @@ void main(void)
 
     [[unroll]]
     for (uint y = 0; y < 8; y++) {
-        int v = int(round(blocks[BLOCK_ID][COMP_ID*72 + y*9 + ROW_ID]*4095.0));
-        v = clamp(v, 0, 4095);
-        v <<= 4;
+        int v = int(round(blocks[BLOCK_ID][COMP_ID*72 + y*9 + ROW_ID]*65535.0));
+        v = clamp(v, 0, 65535);
         imageStore(dst,
                    offs + 2*ivec2(BLOCK_ID*8 + ROW_ID, y),
                    ivec4(v));

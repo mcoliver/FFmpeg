@@ -39,6 +39,8 @@ layout (set = 0, binding = 1, scalar) readonly buffer frame_data_buf {
 layout (push_constant, scalar) uniform pushConstants {
    u8buf pkt_data;
    ivec2 tile_size;
+   float wb_red;
+   float wb_blue;
 };
 
 #define COMP_ID (gl_LocalInvocationID.y)

@@ -23,6 +23,10 @@
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mem_internal.h"
 #include "libavutil/mem.h"
+#include "libavutil/opt.h"
+#include "libavutil/avstring.h"
+
+
 
 #define CACHED_BITSTREAM_READER !ARCH_X86_32
 
@@ -44,7 +48,7 @@ static av_cold int decode_init(AVCodecContext *avctx)
 {
     ProResRAWContext *s = avctx->priv_data;
 
-    avctx->bits_per_raw_sample = 12;
+    avctx->bits_per_raw_sample = 16;
     avctx->color_primaries = AVCOL_PRI_UNSPECIFIED;
     avctx->color_trc = AVCOL_TRC_UNSPECIFIED;
     avctx->colorspace = AVCOL_SPC_UNSPECIFIED;
@@ -248,6 +252,7 @@ static int decode_tile(AVCodecContext *avctx, TileContext *tile,
 
     GetByteContext *gb = &tile->gb;
     LOCAL_ALIGNED_32(int16_t, qmat, [64]);
+    LOCAL_ALIGNED_32(int16_t, qmat_scaled, [64]);
 
     if (tile->x >= avctx->width)
         return 0;
@@ -269,23 +274,51 @@ static int decode_tile(AVCodecContext *avctx, TileContext *tile,
 
     const uint8_t *comp_start = gb->buffer_start + header_len;
 
+    /* White balance gains are applied by scaling the quantization matrix.
+     * Original bitstream component order: 0=G2, 1=G1, 2=B, 3=R */
+    
+    /* G2 (Bitstream Component 0) */
     ret = decode_comp(avctx, tile, frame, comp_start,
                       size[0], 2, qmat);
     if (ret < 0)
         goto fail;
 
+    /* G1 (Bitstream Component 1) */
     ret = decode_comp(avctx, tile, frame, comp_start + size[0],
                       size[1], 1, qmat);
     if (ret < 0)
         goto fail;
 
-    ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1],
-                      size[2], 3, qmat);
+    /* B (Bitstream Component 2) */
+    if (s->wb_blue != 1.0f && s->wb_blue > 0.0f) {
+        for (int i = 0; i < 64; i++)
+            qmat_scaled[i] = av_clip_int16(lrintf(qmat[i] * s->wb_blue));
+        ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1],
+                          size[2], 3, qmat_scaled);
+    } else {
+        ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1],
+                          size[2], 3, qmat);
+    }
     if (ret < 0)
         goto fail;
 
-    ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1] + size[2],
-                      size[3], 0, qmat);
+    /* R (Bitstream Component 3) */
+    if (s->wb_red != 1.0f && s->wb_red > 0.0f) {
+        for (int i = 0; i < 64; i++)
+            qmat_scaled[i] = av_clip_int16(lrintf(qmat[i] * s->wb_red));
+        ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1] + size[2],
+                          size[3], 0, qmat_scaled);
+    } else {
+        ret = decode_comp(avctx, tile, frame, comp_start + size[0] + size[1] + size[2],
+                          size[3], 0, qmat);
+    }
+
+    if (ret < 0)
+        goto fail;
+
+    if (ret < 0)
+        goto fail;
+
     if (ret < 0)
         goto fail;
 
@@ -294,6 +327,7 @@ fail:
     av_log(avctx, AV_LOG_ERROR, "tile %d/%d decoding error\n", tile->x, tile->y);
     return ret;
 }
+
 
 static int decode_tiles(AVCodecContext *avctx, void *arg,
                         int n, int thread_nb)
@@ -348,7 +382,12 @@ static int decode_frame(AVCodecContext *avctx,
 
     GetByteContext gb;
     bytestream2_init(&gb, avpkt->data, avpkt->size);
+
+    av_log(avctx, AV_LOG_DEBUG, "Using WB gains: R=%.6f, B=%.6f\n", s->wb_red, s->wb_blue);
+
     if (bytestream2_get_be32(&gb) != avpkt->size)
+
+
         return AVERROR_INVALIDDATA;
 
     /* ProRes RAW frame */
@@ -531,13 +570,30 @@ static int update_thread_context(AVCodecContext *dst, const AVCodecContext *src)
 }
 #endif
 
+#define OFFSET(x) offsetof(ProResRAWContext, x)
+#define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
+static const AVOption prores_raw_options[] = {
+    { "wb_red",  "White balance red gain",  OFFSET(wb_red),  AV_OPT_TYPE_FLOAT, { .dbl = 1.0 }, 0.0, 10.0, VD },
+    { "wb_blue", "White balance blue gain", OFFSET(wb_blue), AV_OPT_TYPE_FLOAT, { .dbl = 1.0 }, 0.0, 10.0, VD },
+    { NULL }
+};
+
+static const AVClass prores_raw_decoder_class = {
+    .class_name = "prores_raw",
+    .item_name  = av_default_item_name,
+    .option     = prores_raw_options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
 const FFCodec ff_prores_raw_decoder = {
     .p.name           = "prores_raw",
     CODEC_LONG_NAME("Apple ProRes RAW"),
     .p.type           = AVMEDIA_TYPE_VIDEO,
     .p.id             = AV_CODEC_ID_PRORES_RAW,
     .priv_data_size   = sizeof(ProResRAWContext),
+    .p.priv_class     = &prores_raw_decoder_class,
     .init             = decode_init,
+
     .close            = decode_end,
     FF_CODEC_DECODE_CB(decode_frame),
     UPDATE_THREAD_CONTEXT(update_thread_context),
