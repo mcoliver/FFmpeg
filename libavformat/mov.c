@@ -512,7 +512,12 @@ retry:
     // Allocates enough space if data_type is a int32 or float32 number, otherwise
     // worst-case requirement for output string in case of utf8 coded input
     num = (data_type >= 21 && data_type <= 23);
-    str_size_alloc = (num ? 512 : (raw ? str_size : str_size * 2)) + 1;
+    /* For the ProRes RAW colormatrices blob we need more space than str_size*2:
+     * each 40-byte binary entry decodes to ~90 chars of text. */
+    if (key && !strcmp(key, "com.apple.proresraw.whitebalance.bycct.colormatrices"))
+        str_size_alloc = (str_size / 40) * 96 + 16;
+    else
+        str_size_alloc = (num ? 512 : (raw ? str_size : str_size * 2)) + 1;
     str = av_mallocz(str_size_alloc);
     if (!str)
         return AVERROR(ENOMEM);
@@ -520,7 +525,26 @@ retry:
     if (parse)
         parse(c, pb, str_size, key);
     else {
-        if (!raw && (data_type == 3 || (data_type == 0 && (langcode < 0x400 || langcode == 0x7fff)))) { // MAC Encoded
+        if (data_type == 0 && key &&
+                   !strcmp(key, "com.apple.proresraw.whitebalance.bycct.colormatrices") &&
+                   str_size >= 40) {
+            /* Apple ProRes RAW color matrix lookup table.
+             * The blob has a 4-byte header, then repeating 40-byte entries:
+             * uint32 CCT followed by nine big-endian float32 matrix values. */
+            avio_skip(pb, 4); /* skip blob header word */
+            int n_entries = (str_size - 4) / 40;
+            char *p = str;
+            char *p_end = str + str_size_alloc - 1;
+            for (int ei = 0; ei < n_entries && p < p_end; ei++) {
+                uint32_t cct = avio_rb32(pb);
+                float m[9];
+                for (int mi = 0; mi < 9; mi++)
+                    m[mi] = av_int2float(avio_rb32(pb));
+                p += snprintf(p, p_end - p,
+                              "%u:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f;",
+                              cct, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]);
+            }
+        } else if (!raw && (data_type == 3 || (data_type == 0 && (langcode < 0x400 || langcode == 0x7fff)))) { // MAC Encoded
             mov_read_mac_string(c, pb, str_size, str, str_size_alloc);
         } else if (data_type == 21) { // BE signed integer, variable size
             int val = 0;
@@ -10951,6 +10975,60 @@ static int mov_read_header(AVFormatContext *s)
         }
     }
     export_orphan_timecode(s);
+
+    /* For Apple ProRes RAW: if colormatrices table and CCT are both present,
+     * interpolate the correct 3x3 color matrix for the recorded white balance
+     * and store it as clean metadata on the video stream. */
+    {
+        AVDictionaryEntry *cm_entry = av_dict_get(s->metadata,
+            "com.apple.proresraw.whitebalance.bycct.colormatrices", NULL, 0);
+        AVDictionaryEntry *cct_entry = av_dict_get(s->metadata,
+            "org.smpte.rdd18.camera.whitebalance", NULL, 0);
+        if (cm_entry && cm_entry->value[0] && cct_entry) {
+            unsigned int target_cct = 0;
+            sscanf(cct_entry->value, "%u", &target_cct);
+            if (target_cct > 0) {
+                /* Parse the encoded table: "CCT:m0,m1,...,m8;CCT:..." */
+                unsigned int cct0 = 0, cct1 = 0;
+                float m0[9] = {0}, m1[9] = {0};
+                int found_lo = 0, found_hi = 0;
+                const char *p = cm_entry->value;
+                while (*p) {
+                    unsigned int cct;
+                    float m[9];
+                    if (sscanf(p, "%u:%f,%f,%f,%f,%f,%f,%f,%f,%f",
+                               &cct, &m[0], &m[1], &m[2],
+                               &m[3], &m[4], &m[5],
+                               &m[6], &m[7], &m[8]) == 10) {
+                        if (cct <= target_cct) { cct0 = cct; memcpy(m0, m, sizeof(m)); found_lo = 1; }
+                        if (!found_hi && cct >= target_cct) { cct1 = cct; memcpy(m1, m, sizeof(m)); found_hi = 1; }
+                    }
+                    p = strchr(p, ';');
+                    if (!p) break;
+                    p++;
+                }
+                if (found_lo && found_hi) {
+                    float t = (cct1 > cct0) ? (float)(target_cct - cct0) / (cct1 - cct0) : 0.0f;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",
+                             m0[0]*(1-t)+m1[0]*t, m0[1]*(1-t)+m1[1]*t, m0[2]*(1-t)+m1[2]*t,
+                             m0[3]*(1-t)+m1[3]*t, m0[4]*(1-t)+m1[4]*t, m0[5]*(1-t)+m1[5]*t,
+                             m0[6]*(1-t)+m1[6]*t, m0[7]*(1-t)+m1[7]*t, m0[8]*(1-t)+m1[8]*t);
+                    /* Set the interpolated matrix on each ProRes RAW video stream */
+                    for (int si = 0; si < s->nb_streams; si++) {
+                        AVStream *vst = s->streams[si];
+                        if (vst->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+                            (vst->codecpar->codec_id == AV_CODEC_ID_PRORES_RAW ||
+                             vst->codecpar->codec_tag == AV_RL32("aprn") ||
+                             vst->codecpar->codec_tag == AV_RL32("aprh"))) {
+                            av_dict_set(&vst->metadata, "prores_raw_color_matrix", buf, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* Create LCEVC stream groups. */
     err = mov_parse_lcevc_streams(s);
