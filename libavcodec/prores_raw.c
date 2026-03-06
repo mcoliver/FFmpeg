@@ -244,7 +244,7 @@ static int decode_comp(AVCodecContext *avctx, TileContext *tile, AVFrame *frame,
       for (int y = 0; y < 8; y++) {
         for (int x = 0; x < 8; x++) {
           int val = p[x * 2];
-          val += bl; // Subtract black level
+          val -= bl; // Subtract black level
           if (val < 0)
             val = 0;
           p[x * 2] = av_clip_uint16((unsigned)val * g >> 11);
@@ -387,9 +387,9 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
     /* External recording from an Atomos recorder. */
     /* Many cameras output linear RAW externally.
      * Sony recordings via Atomos are often SGamut3.Cine / SLog3.
-     * defaulting to BT.2020 / Linear as a safe/high-gamut starting point. */
+     * defaulted to BT.2020 / Unspecified to avoid incorrect gamma shifts. */
     avctx->color_primaries = AVCOL_PRI_BT2020;
-    avctx->color_trc = AVCOL_TRC_LINEAR;
+    avctx->color_trc = AVCOL_TRC_UNSPECIFIED;
     break;
   default:
     avctx->color_trc = AVCOL_TRC_UNSPECIFIED;
